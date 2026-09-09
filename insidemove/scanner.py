@@ -141,19 +141,44 @@ def run_scan(force: bool = False) -> int:
     session_date = session.isoformat()
     log.info("scanning session %s across %d tickers", session_date, len(frames))
 
-    picked = signals.rank(frames, session_ts)
-    picked = [c for c in picked if force or not state.already_alerted(c.ticker, session_date)]
+    ranked = signals.rank(frames, session_ts)
+
+    # Separate "nothing qualified" from "everything that qualified was already
+    # sent". Reporting both as a quiet tape is actively misleading: one means
+    # the market did nothing, the other means you have already seen it.
+    if force:
+        picked, repeats = ranked, []
+    else:
+        repeats = [c for c in ranked if state.already_alerted(c.ticker, session_date)]
+        already = {c.ticker for c in repeats}
+        picked = [c for c in ranked if c.ticker not in already]
 
     n_primary = sum(1 for c in picked if c.tier == "primary")
     n_secondary = len(picked) - n_primary
 
     if not picked:
-        msg = (
-            f"<b>🧭 InsideMove Agent — Daily Scan</b>\n"
-            f"Session: <b>{session_date}</b>\n\n"
-            f"Nothing crossed the ±{CFG.move_threshold_pct:.0f}% threshold and no "
-            f"secondary price-action setup met the bar today. Quiet tape — no alerts."
-        )
+        if repeats:
+            names = ", ".join(f"<b>{c.ticker}</b>" for c in repeats[:5])
+            msg = (
+                f"<b>🧭 InsideMove Agent — Daily Scan</b>\n"
+                f"Session: <b>{session_date}</b>\n\n"
+                f"{len(repeats)} name(s) qualified, but all of them were already "
+                f"sent to you for this session: {names}.\n\n"
+                f"<i>Nothing new — this is a repeat scan of a session you have "
+                f"already seen, not a quiet market.</i>"
+            )
+            log.info(
+                "all %d qualifying names for %s were already alerted — nothing new to send",
+                len(repeats), session_date,
+            )
+        else:
+            msg = (
+                f"<b>🧭 InsideMove Agent — Daily Scan</b>\n"
+                f"Session: <b>{session_date}</b>\n\n"
+                f"Nothing crossed the ±{CFG.move_threshold_pct:.0f}% threshold and no "
+                f"secondary price-action setup met the bar. Genuinely quiet tape — "
+                f"{len(frames):,} tickers scanned, none qualified."
+            )
         if CFG.dry_run:
             print(msg)
         else:
@@ -161,6 +186,11 @@ def run_scan(force: bool = False) -> int:
         return 0
 
     header = _header(session_date, n_primary, n_secondary)
+    if repeats:
+        header += (
+            f"\n<i>{len(repeats)} already sent earlier for this session — "
+            f"suppressed.</i>"
+        )
     if CFG.dry_run:
         print(header)
     else:
