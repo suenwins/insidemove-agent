@@ -1,0 +1,7 @@
+# InsideMove Agent — daily scan, 15:00 Asia/Kuala_Lumpur, weekdays only.
+# Confirm the box's timezone first:  timedatectl set-timezone Asia/Kuala_Lumpur
+0 15 * * 1-5 cd /opt/insidemove-agent && .venv/bin/python run_scan.py >> data/scan.log 2>&1
+
+# Weekly ticker-universe refresh (Sunday 20:00). Optional — the scan refreshes
+# it lazily every 7 days anyway; this just moves the cost off a trading day.
+0 20 * * 0 cd /opt/insidemove-agent && .venv/bin/python -c "from insidemove import universe; universe.get_universe(force=True)" >> data/scan.log 2>&1

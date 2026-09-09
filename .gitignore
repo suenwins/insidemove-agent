@@ -1,0 +1,28 @@
+# Secrets — never commit. Tuning lives in settings.env instead.
+.env
+
+# Virtual environments. Both spellings: these hold platform-specific
+# binaries that are useless on GitHub's Linux runners and would add
+# hundreds of megabytes to every clone.
+.venv/
+venv/
+env/
+ENV/
+
+# Price cache, state files, rendered charts, logs
+data/
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Node (the Cloudflare Worker)
+node_modules/
+worker/.wrangler/
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

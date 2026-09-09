@@ -1,0 +1,17 @@
+[Unit]
+Description=InsideMove Agent — Telegram listener
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/insidemove-agent
+EnvironmentFile=/opt/insidemove-agent/.env
+ExecStart=/opt/insidemove-agent/.venv/bin/python bot.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/opt/insidemove-agent/data/bot.log
+StandardError=append:/opt/insidemove-agent/data/bot.log
+
+[Install]
+WantedBy=multi-user.target

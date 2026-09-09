@@ -1,0 +1,54 @@
+name: Telegram callback
+
+# Fired by the Cloudflare Worker via repository_dispatch when you tap a button
+# or send a command. The Worker has already answered Telegram, so this job's
+# only job is to do the work and send the result.
+on:
+  repository_dispatch:
+    types: [telegram_update]
+
+# Taps are queued rather than cancelled: two Approves in a row should both
+# produce a note.
+concurrency:
+  group: insidemove-callback-${{ github.event.client_payload.chat_id }}
+  cancel-in-progress: false
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # Read-only: a button press fetches the one ticker it needs directly,
+      # so it never writes the cache and can never race the daily scan.
+      - name: Restore price cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: insidemove-data-none
+          restore-keys: |
+            insidemove-data-
+
+      - name: Write update payload
+        env:
+          UPDATE_JSON: ${{ toJSON(github.event.client_payload.update) }}
+        run: printf '%s' "$UPDATE_JSON" > update.json
+
+      - name: Handle update
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          # Thresholds, universe and note engine come from settings.env,
+          # committed to the repo so local and deployed cannot drift.
+        run: python3 handle_callback.py --update-file update.json

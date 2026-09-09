@@ -1,0 +1,38 @@
+# Two containers from one image:
+#   bot  — always-on long poller that answers button taps
+#   cron — fires the daily scan at 15:00 Asia/Kuala_Lumpur, weekdays
+#
+# They share the ./data volume, which holds the SQLite state both need.
+
+services:
+  bot:
+    build: .
+    image: insidemove-agent
+    container_name: insidemove-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    command: python bot.py
+
+  cron:
+    image: insidemove-agent
+    container_name: insidemove-cron
+    restart: unless-stopped
+    depends_on:
+      - bot
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        ln -snf /usr/share/zoneinfo/$${TZ_NAME:-Asia/Kuala_Lumpur} /etc/localtime
+        echo "$${TZ_NAME:-Asia/Kuala_Lumpur}" > /etc/timezone
+        printenv | grep -E '^(TELEGRAM|ANTHROPIC|FINNHUB|MOVE|DIRECTION|SECONDARY|VOLUME|GAP|RANGE|WICK|MAX|UNIVERSE|MIN|CHART|NEWS|SMA|ATR|RSI|DATA|TZ)' \
+          | sed 's/^/export /' > /app/data/cron.env
+        echo '0 15 * * 1-5 . /app/data/cron.env; cd /app && python run_scan.py >> /app/data/scan.log 2>&1' > /etc/cron.d/insidemove
+        chmod 0644 /etc/cron.d/insidemove
+        crontab /etc/cron.d/insidemove
+        touch /app/data/scan.log
+        cron && tail -f /app/data/scan.log

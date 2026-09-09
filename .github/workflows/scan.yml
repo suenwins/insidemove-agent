@@ -1,0 +1,79 @@
+name: Daily scan
+
+# 15:00 Asia/Kuala_Lumpur = 07:00 UTC. GitHub runs cron in UTC only.
+# Scheduled runs are queued, not guaranteed on the minute — expect the job to
+# start anywhere from 07:00 to roughly 07:20 UTC under load.
+on:
+  schedule:
+    - cron: "0 7 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Ignore the weekday guard and the already-alerted check"
+        type: boolean
+        default: false
+      refresh_universe:
+        description: "Force a ticker-list rebuild"
+        type: boolean
+        default: false
+
+concurrency:
+  group: insidemove-scan
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # The price cache is what turns an 8-minute download into a 40-second
+      # one. Cache keys are immutable, so we write a new one each run and let
+      # restore-keys find the most recent previous entry.
+      - name: Restore price cache
+        uses: actions/cache/restore@v4
+        with:
+          path: data
+          key: insidemove-data-${{ github.run_id }}
+          restore-keys: |
+            insidemove-data-
+
+      - name: Run scan
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          # Thresholds, universe and note engine come from settings.env,
+          # committed to the repo so local and deployed cannot drift.
+        run: |
+          python3 run_scan.py \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.force) && '--force' || '' }} \
+            ${{ (github.event_name == 'workflow_dispatch' && inputs.refresh_universe) && '--refresh-universe' || '' }}
+
+      # Saved even when the scan fails, so a bad day never costs the cache and
+      # forces a full re-download tomorrow.
+      - name: Save price cache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: insidemove-data-${{ github.run_id }}
+
+      - name: Upload log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scan-log-${{ github.run_id }}
+          path: data/*.log
+          if-no-files-found: ignore
+          retention-days: 14

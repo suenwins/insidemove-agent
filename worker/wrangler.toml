@@ -1,0 +1,17 @@
+name = "insidemove-webhook"
+main = "index.js"
+compatibility_date = "2026-01-01"
+
+# Secrets are never written here. Set each one with:
+#   wrangler secret put TELEGRAM_BOT_TOKEN
+#   wrangler secret put TELEGRAM_SECRET
+#   wrangler secret put TELEGRAM_CHAT_ID
+#   wrangler secret put GITHUB_TOKEN
+#   wrangler secret put GITHUB_REPO
+#
+# GITHUB_TOKEN should be a fine-grained personal access token scoped to this
+# one repository with Contents: read and write — that is the permission
+# repository_dispatch requires, and nothing broader is needed.
+
+[observability]
+enabled = true
