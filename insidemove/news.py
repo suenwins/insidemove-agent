@@ -158,11 +158,15 @@ def recent_news(
     session_date: str | date | None = None,
     hours: int | None = None,
     limit: int = 6,
+    both_sources: bool = False,
 ) -> list[dict]:
     """Headlines published inside the scanned session's window, newest first."""
     hours = hours or CFG.news_window_hours
     window = session_window(session_date, hours)
-    items = _finnhub_news(ticker, hours, window) or _yahoo_news(ticker, hours, window)
+    if both_sources:
+        items = _finnhub_news(ticker, hours, window) + _yahoo_news(ticker, hours, window)
+    else:
+        items = _finnhub_news(ticker, hours, window) or _yahoo_news(ticker, hours, window)
     items = [i for i in items if i["headline"]]
     items.sort(key=lambda i: i["published"], reverse=True)
 
@@ -178,5 +182,86 @@ def recent_news(
     return unique[:limit]
 
 
-def no_catalyst_line(hours: int | None = None) -> str:
-    return NO_CATALYST.format(hours=hours or CFG.news_window_hours)
+def catalyst_news(
+    ticker: str,
+    company: str | None = None,
+    session_date: str | date | None = None,
+    hours: int | None = None,
+    limit: int = 3,
+) -> tuple[list[dict], int]:
+    """Only the items that could explain the move, strongest first.
+
+    Returns `(items, rejected)` where `rejected` counts in-window headlines
+    that were dropped as roundups, mover lists or price-only stories — so
+    the note can say "3 headlines, none of them a reason" instead of
+    pretending the tape was silent.
+    """
+    from . import catalyst, feeds, fundamentals
+
+    hours = hours or CFG.news_window_hours
+    window = session_window(session_date, hours)
+    # Ask every free source. Finnhub often carries only aggregator roundups
+    # for a small cap while the press-release wire has the actual
+    # announcement, and vice versa.
+    start, end = window
+    raw = recent_news(ticker, session_date=session_date, hours=hours, limit=40,
+                      both_sources=True)
+    if CFG.free_feeds_enabled:
+        raw += feeds.press_releases(ticker, company, start, end)
+        raw += feeds.general_news(ticker, company, start, end)
+
+    seen_head: set[str] = set()
+    deduped = []
+    for item in raw:
+        key = (item.get("headline") or "").lower()[:80]
+        if not key or key in seen_head:
+            continue
+        seen_head.add(key)
+        deduped.append(item)
+
+    relevant = catalyst.filter_relevant(deduped, ticker, company)
+    rejected = len(deduped) - len(relevant)
+
+    # Sources that state a fact rather than report one.
+    filings = catalyst.sec_filings(ticker, start, end)
+    extra = []
+    if session_date:
+        earnings = fundamentals.earnings_event(ticker, str(session_date))
+        if earnings:
+            extra.append(earnings)
+        halt = feeds.halt_item(ticker, str(session_date)) if CFG.free_feeds_enabled else None
+        if halt:
+            extra.append(halt)
+
+    merged = relevant + filings + extra
+    merged.sort(key=lambda i: (catalyst.rank_of(i["tag"]), i.get("age_hours", 0)))
+
+    # A filing and a headline often describe the same event; keep one line
+    # per catalyst type unless there is nothing else to show.
+    out, seen = [], set()
+    for item in merged:
+        if item["tag"] in seen:
+            continue
+        seen.add(item["tag"])
+        out.append(item)
+    for item in merged:                      # top up if types ran out
+        if len(out) >= limit:
+            break
+        if item not in out:
+            out.append(item)
+    log.info(
+        "%s catalysts: %d relevant headline(s), %d filing(s), %d calendar/halt fact(s), "
+        "%d rejected as noise",
+        ticker, len(relevant), len(filings), len(extra), rejected,
+    )
+    return out[:limit], rejected
+
+
+def no_catalyst_line(hours: int | None = None, rejected: int = 0) -> str:
+    line = NO_CATALYST.format(hours=hours or CFG.news_window_hours)
+    if rejected:
+        line = line.replace(
+            " — move may",
+            f" ({rejected} market-roundup / price-only headline(s) ignored) — move may",
+        )
+    return line

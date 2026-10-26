@@ -66,8 +66,12 @@ def handle_approve(action: dict, chat_id: int, message_id: int, callback_id: str
     )
     profile = data.company_profile(ticker)
     meta = universe.meta_for(ticker)
-    headlines = news.recent_news(
-        ticker, session_date=action["session_date"], hours=72, limit=8
+    headlines, rejected = news.catalyst_news(
+        ticker,
+        company=profile.get("longName") or profile.get("shortName") or meta.get("name"),
+        session_date=action["session_date"],
+        hours=72,
+        limit=3,
     )
     insiders = fundamentals.insider_transactions(ticker)
     analysts = fundamentals.analyst_view(ticker, profile)
@@ -111,7 +115,8 @@ def handle_approve(action: dict, chat_id: int, message_id: int, callback_id: str
         ),
         "insider_transactions_6m": insiders or "no Form 4 filings available in the data source",
         "peers_same_session": peer_perf or "peer data unavailable",
-        "news_last_72h": headlines or "no headlines in window",
+        "news_last_72h": headlines or "no company-specific catalyst in window",
+        "news_rejected": rejected,
         "technical_context": {
             "rsi": snap.rsi,
             "sma_fast": snap.sma_fast,

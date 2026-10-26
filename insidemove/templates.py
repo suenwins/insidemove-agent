@@ -91,22 +91,65 @@ def _join(lines: list[str]) -> str:
 # Stage 2 — the one-line catalyst
 # ===========================================================================
 
-def catalyst_line(ticker: str, candidate: dict, headlines: list[dict]) -> str:
-    """Without a model there is nothing to summarise with, so the honest move
-    is to show the freshest in-window headline verbatim and attribute it,
-    rather than stitching a sentence out of keywords and implying a causal
-    link the data does not support."""
+# What each catalyst type usually means for a move. Rule-based, so it is
+# labelled INFERENCE wherever it appears.
+TAG_READ = {
+    "M&A": "Deal news reprices a stock toward the offer or the implied value in a "
+           "single session; the move is explained if the price sits near the terms.",
+    "Clinical / FDA": "A binary regulatory or trial outcome — the classic cause of a "
+                      "multi-fold move in a small-cap biotech, in either direction.",
+    "Earnings": "A results print reprices the stock on the numbers and, usually more "
+                "so, on what management says about the next quarter.",
+    "Guidance": "A change in the forward outlook — markets move on expectations, so "
+                "guidance often matters more than the quarter just reported.",
+    "Financing / dilution": "New shares or convertibles dilute existing holders; a sharp "
+                            "drop is the typical reaction. If the stock rose instead, the "
+                            "raise may be funding something the market values, or the "
+                            "offering was priced at a premium.",
+    "Legal / regulatory": "Legal, listing or regulatory risk — these moves can extend if "
+                          "the issue is unresolved.",
+    "Contract / partnership": "A new contract or partner — sizeable relative to revenue "
+                              "for small caps, which is why it can move them sharply.",
+    "Analyst action": "A rating or target change — usually a smaller, faster-fading "
+                      "catalyst than company news.",
+    "Management": "A leadership change — the market is pricing the change in direction.",
+    "Capital return": "A buyback or dividend change — signals management's view of value.",
+    "Index change": "Index inclusion forces passive buying; the move is flow, not fundamentals.",
+    "Product / business": "An operating update — relevance depends on its size versus the business.",
+    "Trading halt": "The exchange stopped trading in the stock. A halt for news "
+                    "pending means a company announcement caused the move; the "
+                    "announcement itself is what to read next.",
+    "SEC filing": "The company filed a material disclosure in the window; open the "
+                  "filing to see the event itself.",
+    "Company news": "Company-specific news in the window, but not a recognisable "
+                    "catalyst type — treat it as a lead to verify, not an explanation.",
+}
+
+
+def catalyst_item(item: dict, link: bool = True) -> str:
+    """One catalyst as Telegram HTML: [type] headline — detail (source, when)."""
+    tag = esc(item.get("tag") or "News")
+    head = esc((item.get("headline") or "").rstrip(" ."))
+    url = item.get("url") or ""
+    if link and url.startswith("http"):
+        head = f'<a href="{html.escape(url, quote=True)}">{head}</a>'
+    line = f"<b>[{tag}]</b> {head}"
+    if item.get("detail"):
+        line += f" — {esc(item['detail'])}"
+    source = esc(item.get("source") or "unknown source")
+    when = item.get("when")
+    return line + (f" <i>({source}, {esc(when)})</i>" if when else f" <i>({source})</i>")
+
+
+def catalyst_line(ticker: str, candidate: dict, headlines: list[dict], rejected: int = 0) -> str:
+    """The strongest company-specific catalyst, or an honest statement that
+    there is none. `headlines` must already be filtered by
+    `news.catalyst_news` — roundups and price-only stories never reach here."""
     if not headlines:
         from .news import no_catalyst_line
 
-        return no_catalyst_line()
-
-    top = headlines[0]
-    line = esc(top["headline"].rstrip(" .")) + "."
-    source = top.get("source") or "unknown source"
-    when = top.get("when")
-    stamp = f"{esc(source)}, {esc(when)}" if when else esc(source)
-    return f"{line} <i>({stamp})</i>"
+        return no_catalyst_line(rejected=rejected)
+    return catalyst_item(headlines[0])
 
 
 # ===========================================================================
@@ -115,32 +158,46 @@ def catalyst_line(ticker: str, candidate: dict, headlines: list[dict]) -> str:
 
 def _catalyst_section(payload: dict) -> list[str]:
     news = payload.get("news_last_72h")
+    rejected = payload.get("news_rejected") or 0
     out = ["<b>1. Proximate Catalyst</b>"]
     if not isinstance(news, list) or not news:
-        out.append(
-            _fact("No headlines published inside the lookback window for this ticker.")
+        noise = (
+            f" {rejected} in-window headline(s) were market roundups or restated the "
+            f"price move without a reason, and were ignored."
+            if rejected else ""
         )
-        out.append(
-            _inf(
-                "With no catalyst on the tape, the move is more likely technical, "
-                "flow-driven, or a sympathy move with a peer than a response to news."
-            )
-        )
+        out.append(_fact(
+            "No company-specific news or material SEC filing inside the lookback window."
+            + noise
+        ))
+        out.append(_inf(
+            "With no catalyst on the tape, the move is more likely technical, "
+            "flow-driven (short squeeze, low float), a sympathy move with a peer, or "
+            "reacting to information not yet on the wires."
+        ))
         return out
 
     for item in news[:3]:
-        when = item.get("when") or "recent"
-        src = esc(item.get("source") or "unknown source")
-        out.append(f"• {esc(item['headline'])} <i>({src}, {when})</i>")
+        out.append("• " + catalyst_item(item))
 
+    lead = news[0]
     session = payload.get("session", {})
-    out.append(
-        _inf(
-            f"The move of {pct(session.get('pct_change'), 2, sign=True)} coincides with "
-            f"the above; timing is consistent with a reaction, though these headlines "
-            f"establish co-occurrence rather than cause."
-        )
+    move = session.get("pct_change")
+    read = TAG_READ.get(lead.get("tag"), TAG_READ["Company news"])
+    strength = (
+        "is the most likely driver of"
+        if lead.get("tag") not in {"Company news", "SEC filing", "Trading halt"}
+        else "may relate to"
     )
+    out.append(_inf(
+        f"The {esc(lead.get('tag', 'news')).lower()} item above {strength} the "
+        f"{pct(move, 2, sign=True)} move. {read}"
+    ))
+    if move is not None and abs(move) >= 50:
+        out.append(_inf(
+            f"A move of {abs(move):.0f}% is large even for this kind of news — "
+            f"low float, short covering or retail momentum is likely amplifying it."
+        ))
     return out
 
 

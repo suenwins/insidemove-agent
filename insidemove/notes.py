@@ -44,7 +44,7 @@ def _claude():
     return ai
 
 
-def catalyst_line(ticker: str, candidate: dict, headlines: list[dict]) -> str:
+def catalyst_line(ticker: str, candidate: dict, headlines: list[dict], rejected: int = 0) -> str:
     """Returns Telegram-safe HTML carrying its own source attribution, so the
     caller can drop it straight into a message without escaping it again."""
     if _engine(ENGINE) == "anthropic":
@@ -59,7 +59,7 @@ def catalyst_line(ticker: str, candidate: dict, headlines: list[dict]) -> str:
             return line
         except Exception as exc:  # noqa: BLE001
             log.warning("claude catalyst failed for %s (%s) — using template", ticker, exc)
-    return templates.catalyst_line(ticker, candidate, headlines)
+    return templates.catalyst_line(ticker, candidate, headlines, rejected)
 
 
 def equity_note(payload: dict) -> str:

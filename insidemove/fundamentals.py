@@ -145,3 +145,65 @@ def peer_performance(ticker: str, peer_list: list[str], frames: dict) -> list[di
             }
         )
     return out
+
+
+def earnings_event(ticker: str, session_date: str) -> dict | None:
+    """Did this company report around the scanned session?
+
+    Uses Finnhub's earnings calendar (free tier, same key already in use).
+    An earnings date is a hard fact rather than an interpretation: either the
+    company reported in the window or it did not. `hour` is Finnhub's code —
+    bmo = before market open, amc = after market close.
+    """
+    from datetime import date as _date
+
+    try:
+        session = _date.fromisoformat(session_date)
+    except ValueError:
+        return None
+
+    rows = _finnhub(
+        "/calendar/earnings",
+        symbol=ticker,
+        **{"from": (session - timedelta(days=1)).isoformat(),
+           "to": (session + timedelta(days=1)).isoformat()},
+    )
+    events = (rows or {}).get("earningsCalendar") if isinstance(rows, dict) else None
+    if not events:
+        return None
+
+    # A report after the close moves the *next* session, one before the open
+    # moves the same session; both are inside the window either way.
+    event = events[0]
+    when = {"bmo": "before the open", "amc": "after the close", "dmh": "during the session"}.get(
+        (event.get("hour") or "").lower(), ""
+    )
+    parts = [f"Reported earnings on {event.get('date')}"]
+    if when:
+        parts[0] += f" {when}"
+    eps, est = event.get("epsActual"), event.get("epsEstimate")
+    if eps is not None and est is not None:
+        verb = "beat" if eps > est else "missed" if eps < est else "matched"
+        parts.append(f"EPS ${eps:.2f} vs ${est:.2f} estimate ({verb})")
+    elif eps is not None:
+        parts.append(f"EPS ${eps:.2f}")
+    rev, rev_est = event.get("revenueActual"), event.get("revenueEstimate")
+    if rev is not None and rev_est:
+        verb = "above" if rev > rev_est else "below" if rev < rev_est else "in line with"
+        parts.append(f"revenue ${rev/1e6:,.0f}M, {verb} the ${rev_est/1e6:,.0f}M estimate")
+    quarter = event.get("quarter")
+    year = event.get("year")
+    label = f" (Q{quarter} {year})" if quarter and year else ""
+
+    return {
+        "headline": f"{'; '.join(parts)}{label}.",
+        "summary": "",
+        "source": "Finnhub earnings calendar",
+        "url": "",
+        "published": "",
+        "age_hours": 0.0,
+        "when": event.get("date") or "",
+        "tag": "Earnings",
+        "detail": None,
+        "earnings": True,
+    }

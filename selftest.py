@@ -155,7 +155,7 @@ def main() -> int:
     check("template engine is the default", notes.ENGINE == "template", notes.ENGINE)
     check("no Anthropic key required", not notes.requires_anthropic_key())
 
-    ALLOWED = {"b", "i", "code", "pre", "u", "s"}
+    ALLOWED = {"b", "i", "code", "pre", "u", "s", "a"}
     for name, text in rendered.items():
         tags = re.findall(r"</?([a-zA-Z]+)[^>]*>", text)
         bad = sorted(set(t.lower() for t in tags) - ALLOWED)
@@ -302,6 +302,129 @@ def main() -> int:
     live_start, live_end = _news.session_window(None, 24)
     check("with no session given it falls back to trailing-now",
           (live_end - _dt.now(_tz.utc)).total_seconds() < 5)
+
+    print("\nCatalyst relevance filter")
+    from insidemove import catalyst as _cat
+    from datetime import date as _date
+
+    def _h(headline, summary="", source="ChartMill", age=10):
+        return {"headline": headline, "summary": summary, "source": source,
+                "url": "", "published": "", "age_hours": age, "when": f"{age}h ago"}
+
+    noise = [
+        _h("What's going on in today's after hours session"),
+        _h("What's going on in today's session"),
+        _h("Most active stocks in Monday's session"),
+    ]
+    check("market roundups are rejected",
+          _cat.filter_relevant(noise, "ZBIO", "Zenas BioPharma, Inc.") == [])
+    check("price-only headline with no reason is rejected",
+          _cat.filter_relevant([_h("Zenas BioPharma stock soars 179%", "Shares rocketed.")],
+                               "ZBIO", "Zenas BioPharma, Inc.") == [])
+    check("other companies' news is rejected",
+          _cat.filter_relevant([_h("Nvidia beats estimates", source="Reuters")],
+                               "ZBIO", "Zenas BioPharma, Inc.") == [])
+    salvaged = _cat.filter_relevant(
+        [_h("Most active stocks in Monday's session",
+            "Apple slipped. Zenas BioPharma (ZBIO) jumped after positive Phase 3 topline results.")],
+        "ZBIO", "Zenas BioPharma, Inc.")
+    check("roundup sentence naming the company and an event is salvaged",
+          len(salvaged) == 1 and salvaged[0]["tag"] == "Clinical / FDA", str(salvaged))
+    why = _cat.filter_relevant(
+        [_h("Why Zenas BioPharma shares are skyrocketing today",
+            "The company said obexelimab met the primary endpoint.", source="Motley Fool")],
+        "ZBIO", "Zenas BioPharma, Inc.")
+    check("'why is it up' article kept when its summary names the reason",
+          len(why) == 1 and why[0]["tag"] == "Clinical / FDA" and why[0]["detail"])
+    ranked = _cat.filter_relevant(
+        [_h("Acme to present at investor conference", source="PR", age=2),
+         _h("Acme agrees to be acquired by Globex for $40 per share in cash", source="Reuters", age=9)],
+        "ACME", "Acme Robotics Inc.")
+    check("stronger catalyst type ranks above fresher filler",
+          [r["tag"] for r in ranked] == ["M&A", "Company news"], str([r["tag"] for r in ranked]))
+    sub = {"filings": {"recent": {
+        "form": ["8-K", "424B5", "4", "8-K"],
+        "filingDate": ["2026-09-08", "2026-09-08", "2026-09-08", "2026-09-01"],
+        "items": ["2.02,9.01", "", "", "1.01"],
+        "acceptanceDateTime": ["2026-09-08T07:02:11.000Z", "", "", ""],
+        "accessionNumber": ["0000001-26-000001", "0000001-26-000002", "x", "y"],
+        "primaryDocument": ["a.htm", "b.htm", "c", "d"]}}}
+    filings = _cat.parse_filings(sub, 42, _date(2026, 9, 7), _date(2026, 9, 8))
+    check("8-K item 2.02 read as an earnings release",
+          filings and filings[0]["tag"] == "Earnings", str(filings[:1]))
+    check("424B prospectus read as financing / dilution",
+          any(f["tag"] == "Financing / dilution" for f in filings))
+    check("Form 4 and out-of-window filings ignored", len(filings) == 2, str(len(filings)))
+    empty = templates.catalyst_line("ZBIO", {}, [], rejected=3)
+    check("no-catalyst line says how many noise headlines were ignored", "3 market-roundup" in empty)
+
+    print("\nFree catalyst feeds (no key)")
+    from insidemove import feeds as _feeds
+    from datetime import datetime as _dt, timezone as _tz
+
+    rss = b"""<?xml version="1.0"?><rss version="2.0"><channel>
+      <item><title>Zenas BioPharma Announces Positive Phase 3 Results - GlobeNewswire</title>
+        <link>https://example.com/a</link>
+        <pubDate>Mon, 08 Sep 2026 11:30:00 GMT</pubDate>
+        <description>&lt;p&gt;Obexelimab met the primary endpoint.&lt;/p&gt;</description></item>
+      <item><title>Old news from last month - Reuters</title>
+        <link>https://example.com/b</link>
+        <pubDate>Fri, 08 Aug 2026 11:30:00 GMT</pubDate>
+        <description>x</description></item>
+    </channel></rss>"""
+    import xml.etree.ElementTree as _ET
+    parsed = [
+        {"title": (i.findtext("title") or "").strip(),
+         "description": _feeds._text(i.findtext("description")),
+         "link": i.findtext("link") or "", "source": "",
+         "published": _feeds._parse_when(i.findtext("pubDate")), "raw": i}
+        for i in _ET.fromstring(rss).iter("item")
+    ]
+    first = _feeds._as_news(parsed[0], "newswire")
+    check("RSS title splits headline from publisher",
+          first["headline"].endswith("Phase 3 Results") and first["source"] == "GlobeNewswire",
+          f"{first['headline']} / {first['source']}")
+    check("RSS description is stripped of HTML", "<p>" not in first["summary"])
+    win_start = _dt(2026, 9, 8, 0, 0, tzinfo=_tz.utc)
+    win_end = _dt(2026, 9, 9, 0, 0, tzinfo=_tz.utc)
+    in_window = [p for p in parsed
+                 if p["published"] and win_start <= p["published"] <= win_end]
+    check("out-of-window feed items are excluded", len(in_window) == 1)
+    check("wire search is restricted to press-release domains",
+          all(d in " OR ".join(f"site:{x}" for x in _feeds.WIRE_DOMAINS)
+              for d in ("globenewswire.com", "prnewswire.com", "businesswire.com")))
+    check("company name drives the query, not just the ticker",
+          _feeds._search_terms("ZBIO", "Zenas BioPharma, Inc.") == '"Zenas BioPharma"',
+          _feeds._search_terms("ZBIO", "Zenas BioPharma, Inc."))
+    check("query falls back to the ticker with no company name",
+          "ZBIO" in _feeds._search_terms("ZBIO", None))
+
+    halt_xml = b"""<?xml version="1.0"?>
+    <rss version="2.0" xmlns:ndaq="http://www.nasdaqtrader.com/"><channel>
+      <item><title>ZBIO</title>
+        <ndaq:IssueSymbol>ZBIO</ndaq:IssueSymbol>
+        <ndaq:ReasonCode>T1</ndaq:ReasonCode>
+        <ndaq:HaltDate>09/08/2026</ndaq:HaltDate>
+        <ndaq:HaltTime>09:14:00</ndaq:HaltTime>
+        <ndaq:ResumptionDate>09/08/2026</ndaq:ResumptionDate>
+        <ndaq:ResumptionTradeTime>09:45:00</ndaq:ResumptionTradeTime></item>
+      <item><title>NOIS</title>
+        <ndaq:IssueSymbol>NOIS</ndaq:IssueSymbol>
+        <ndaq:ReasonCode>LUDP</ndaq:ReasonCode>
+        <ndaq:HaltDate>09/08/2026</ndaq:HaltDate>
+        <ndaq:HaltTime>10:02:00</ndaq:HaltTime></item>
+    </channel></rss>"""
+    halts = _feeds.parse_halts(halt_xml)
+    check("halt feed parsed despite its namespace", set(halts) == {"ZBIO", "NOIS"}, str(list(halts)))
+    _feeds._halt_cache = halts
+    news_halt = _feeds.halt_item("ZBIO", "2026-09-08")
+    check("news-pending halt becomes a catalyst record",
+          news_halt and news_halt["tag"] == "Trading halt" and "news pending" in news_halt["headline"])
+    check("halt record carries the resumption time",
+          news_halt and "09:45:00" in news_halt["headline"], str(news_halt))
+    check("volatility pause is not treated as a catalyst",
+          _feeds.halt_item("NOIS", "2026-09-08") is None)
+    _feeds._halt_cache = {}
 
     print("\nBootstrap without a chat id")
     import importlib

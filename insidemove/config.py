@@ -51,6 +51,11 @@ class Config:
     telegram_chat_id: str = os.getenv("TELEGRAM_CHAT_ID", "")
     anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
     finnhub_api_key: str = os.getenv("FINNHUB_API_KEY", "")
+    # SEC asks automated clients to identify themselves in the User-Agent.
+    # Optional: an email here makes EDGAR less likely to throttle the bot.
+    sec_contact: str = os.getenv("SEC_CONTACT", "")
+    sec_filings_enabled: bool = _b("SEC_FILINGS", True)
+    free_feeds_enabled: bool = _b("FREE_FEEDS", True)
 
     anthropic_model: str = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-4-5")
 

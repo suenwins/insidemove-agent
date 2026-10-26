@@ -74,14 +74,14 @@ def process_candidate(cand: Candidate, session_date: str) -> None:
         if profile.get("shortName") and len(profile["shortName"]) < len(meta.get("name", "")):
             meta["name"] = profile["shortName"]
 
-    headlines = news.recent_news(cand.ticker, session_date=session_date)
+    headlines, rejected = news.catalyst_news(
+        cand.ticker, company=meta.get("name"), session_date=session_date
+    )
     try:
-        catalyst = notes.catalyst_line(cand.ticker, cand.__dict__, headlines)
+        catalyst = notes.catalyst_line(cand.ticker, cand.__dict__, headlines, rejected)
     except Exception as exc:  # noqa: BLE001
         log.error("catalyst generation failed for %s: %s", cand.ticker, exc)
-        catalyst = (
-            headlines[0]["headline"] if headlines else news.no_catalyst_line()
-        )
+        catalyst = news.no_catalyst_line(rejected=rejected)
 
     text = format_alert(cand, meta, catalyst, headlines)
 
