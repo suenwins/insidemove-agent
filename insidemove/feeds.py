@@ -151,6 +151,29 @@ def general_news(ticker: str, company: str | None, start: datetime, end: datetim
     return items
 
 
+YAHOO_TICKER_RSS = (
+    "https://feeds.finance.yahoo.com/rss/2.0/headline?s={ticker}&region=US&lang=en-US"
+)
+
+
+def ticker_headlines(ticker: str, start: datetime, end: datetime) -> list[dict]:
+    """Yahoo's per-ticker headline feed — keyless, and scoped to the symbol
+    rather than to a name match.
+
+    This matters for the small caps the scan keeps surfacing: a name search
+    misses a company whose release the outlets never picked up, while this
+    feed carries the wire item itself because it is attached to the symbol.
+    """
+    items = _rss_items(YAHOO_TICKER_RSS.format(ticker=quote_plus(ticker)))
+    out = []
+    for entry in items:
+        when = entry["published"]
+        if when is None or not (start <= when <= end) or not entry["title"]:
+            continue
+        out.append(_as_news(entry, "Yahoo Finance"))
+    return out
+
+
 # ---------------------------------------------------------------------------
 # Nasdaq trading halts
 # ---------------------------------------------------------------------------

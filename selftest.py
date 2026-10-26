@@ -355,8 +355,100 @@ def main() -> int:
     check("424B prospectus read as financing / dilution",
           any(f["tag"] == "Financing / dilution" for f in filings))
     check("Form 4 and out-of-window filings ignored", len(filings) == 2, str(len(filings)))
-    empty = templates.catalyst_line("ZBIO", {}, [], rejected=3)
+    empty = templates.catalyst_line("ZBIO", {}, [], report={
+        "rejected": 3, "hours": 48,
+        "counts": {"news API": 3, "press wires": 0, "Google News": 0},
+        "sec_available": False})
     check("no-catalyst line says how many noise headlines were ignored", "3 market-roundup" in empty)
+    check("no-catalyst line names the sources that were searched",
+          "press wires" in empty and "Google News" in empty, empty)
+    check("no-catalyst line flags SEC being unreachable", "SEC_CONTACT" in empty, empty)
+    from insidemove import catalyst as _c2
+    check("SEC availability is reported, not silently assumed",
+          _c2.sec_available() is True)
+    check("EDGAR User-Agent carries a contact address when configured",
+          "(" in _c2._user_agent() if _c2.CFG.sec_contact else _c2._user_agent() == "InsideMoveAgent/1.0",
+          _c2._user_agent())
+
+    # Regressions taken straight from a live run's output.
+    peer = _cat.filter_relevant(
+        [_h("Genmab stock surges 9% following positive phase 3 ovarian cancer trial results",
+            "Shares of Genmab rose. Rival Corcept Therapeutics fell on the read-across.",
+            source="Yahoo")],
+        "CORT", "Corcept Therapeutics Incorporated")
+    check("another company's news is labelled a peer read-across, not this ticker's own",
+          len(peer) == 1 and peer[0]["tag"] == "Peer / sector news"
+          and "another company" in peer[0]["source"], str(peer))
+    check("the peer line quotes the sentence about this company",
+          peer and "Corcept" in (peer[0]["detail"] or ""), str(peer[:1]))
+    salvage_event = _cat.filter_relevant(
+        [_h("Ovarian cancer readouts shake the sector",
+            "Genmab rose. Corcept Therapeutics said its own phase 3 trial missed the primary endpoint.",
+            source="Reuters")],
+        "CORT", "Corcept Therapeutics Incorporated")
+    check("an event attributed to this company in the body wins over the peer framing",
+          salvage_event and salvage_event[0]["tag"] == "Clinical / FDA"
+          and "Corcept" in salvage_event[0]["headline"], str(salvage_event[:1]))
+    check("a peer story with nothing about this company is dropped",
+          _cat.filter_relevant(
+              [_h("Genmab stock surges 9% following positive phase 3 trial results",
+                  "Genmab said the trial met its endpoint.", source="Yahoo")],
+              "CORT", "Corcept Therapeutics Incorporated") == [])
+    check("Yahoo quote page is rejected as boilerplate",
+          _cat.filter_relevant(
+              [_h("Exascale Labs Holdings Inc. (XLAB) stock price, news, quote and history",
+                  "", source="Yahoo Finance Australia")],
+              "XLAB", "Exascale Labs Holdings Inc.") == [])
+    for junk in ("XLAB stock forecast 2027", "Should you buy BIO-key International stock?",
+                 "BIO-key International institutional ownership data",
+                 "LKQ Corporation earnings call transcript"):
+        check(f"SEO filler rejected: {junk[:38]}",
+              _cat.filter_relevant([_h(junk, "", source="MarketBeat")],
+                                   "XLAB", "Exascale Labs Holdings Inc.") == [])
+    check("a bare press release with no keyword is still kept",
+          len(_cat.filter_relevant(
+              [_h("BIO-key International Issues Shareholder Letter", "",
+                  source="GlobeNewswire")],
+              "BKYI", "BIO-key International, Inc.")) == 1)
+    check("the same bare headline from an aggregator is dropped",
+          _cat.filter_relevant(
+              [_h("BIO-key International Issues Shareholder Letter", "",
+                  source="Simply Wall St")],
+              "BKYI", "BIO-key International, Inc.") == [])
+    wire_first = _cat.filter_relevant(
+        [_h("Acme wins $40M supply contract", "", source="Reuters", age=2),
+         _h("Acme Announces $40 Million Supply Agreement", "", source="PR Newswire", age=8)],
+        "ACME", "Acme Robotics Inc.")
+    check("the company's own wire release outranks the second-hand report",
+          "Newswire" in wire_first[0]["source"], str([w["source"] for w in wire_first]))
+
+    check("an earnings preview is not a catalyst",
+          _cat.filter_relevant(
+              [_h("Nautilus Biotechnology, Inc. expected to post a loss of 14 cents a share "
+                  "- Earnings Preview", "", source="TradingView")],
+              "NAUT", "Nautilus Biotechnology, Inc.") == [])
+    check("'what to expect ahead of earnings' is not a catalyst",
+          _cat.filter_relevant([_h("LKQ: here's what to expect ahead of earnings", "",
+                                   source="Zacks")], "LKQ", "LKQ Corporation") == [])
+    check("the actual result is still kept",
+          len(_cat.filter_relevant(
+              [_h("LKQ reports Q3 results, revenue misses estimates", "", source="Reuters")],
+              "LKQ", "LKQ Corporation")) == 1)
+    opposite = _cat.filter_relevant(
+        [_h("XLAB Stock Surges On $8.2M NVIDIA GPU Server Contract", "",
+            source="StocksToTrade")],
+        "XLAB", "Exascale Labs Holdings Inc.", move=-28.9)
+    check("a catalyst describing the opposite direction is flagged, not asserted",
+          opposite and opposite[0]["conflicts"] is True, str(opposite[:1]))
+    check("the flag appears in the rendered line",
+          "⚠️" in templates.catalyst_item(opposite[0], link=False),
+          templates.catalyst_item(opposite[0], link=False))
+    same_dir = _cat.filter_relevant(
+        [_h("XLAB Stock Surges On $8.2M NVIDIA GPU Server Contract", "", source="StocksToTrade"),
+         _h("XLAB cuts full-year guidance", "", source="Reuters", age=20)],
+        "XLAB", "Exascale Labs Holdings Inc.", move=-28.9)
+    check("a same-direction catalyst outranks a conflicting one",
+          same_dir[0]["tag"] == "Guidance", str([(d["tag"], d["conflicts"]) for d in same_dir]))
 
     print("\nFree catalyst feeds (no key)")
     from insidemove import feeds as _feeds
@@ -422,6 +514,8 @@ def main() -> int:
           news_halt and news_halt["tag"] == "Trading halt" and "news pending" in news_halt["headline"])
     check("halt record carries the resumption time",
           news_halt and "09:45:00" in news_halt["headline"], str(news_halt))
+    check("per-ticker Yahoo feed is queried by symbol, not by name",
+          "s=BKYI" in _feeds.YAHOO_TICKER_RSS.format(ticker="BKYI"))
     check("volatility pause is not treated as a catalyst",
           _feeds.halt_item("NOIS", "2026-09-08") is None)
     _feeds._halt_cache = {}

@@ -49,6 +49,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           FINNHUB_API_KEY: ${{ secrets.FINNHUB_API_KEY }}
+          # SEC EDGAR requires a contact address; kept as a secret so it
+          # never lands in the repo.
+          SEC_CONTACT: ${{ secrets.SEC_CONTACT }}
           # Thresholds, universe and note engine come from settings.env,
           # committed to the repo so local and deployed cannot drift.
         run: python3 handle_callback.py --update-file update.json

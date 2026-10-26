@@ -188,27 +188,41 @@ def catalyst_news(
     session_date: str | date | None = None,
     hours: int | None = None,
     limit: int = 3,
-) -> tuple[list[dict], int]:
+    move: float | None = None,
+) -> tuple[list[dict], dict]:
     """Only the items that could explain the move, strongest first.
 
-    Returns `(items, rejected)` where `rejected` counts in-window headlines
-    that were dropped as roundups, mover lists or price-only stories — so
-    the note can say "3 headlines, none of them a reason" instead of
-    pretending the tape was silent.
+    Returns `(items, report)`. The report says what each source contributed
+    and how many in-window headlines were thrown away as roundups, mover
+    lists or price-only stories — so "nothing found" can be told apart from
+    "nothing useful found", and a source that is silently failing shows up
+    as a zero instead of looking like a quiet tape.
+
+    The search window is deliberately wider than the one the alert quotes
+    for the price move: an announcement made before the prior close, or on
+    the Friday of a session read on Monday, still explains the move.
     """
     from . import catalyst, feeds, fundamentals
 
-    hours = hours or CFG.news_window_hours
+    hours = hours or CFG.catalyst_window_hours
     window = session_window(session_date, hours)
     # Ask every free source. Finnhub often carries only aggregator roundups
     # for a small cap while the press-release wire has the actual
     # announcement, and vice versa.
     start, end = window
+    counts: dict[str, int] = {}
+    wires = general = []
     raw = recent_news(ticker, session_date=session_date, hours=hours, limit=40,
                       both_sources=True)
+    counts["news API"] = len(raw)
     if CFG.free_feeds_enabled:
-        raw += feeds.press_releases(ticker, company, start, end)
-        raw += feeds.general_news(ticker, company, start, end)
+        wires = feeds.press_releases(ticker, company, start, end)
+        general = feeds.general_news(ticker, company, start, end)
+        symbol = feeds.ticker_headlines(ticker, start, end)
+        counts["press wires"] = len(wires)
+        counts["Google News"] = len(general)
+        counts["ticker feed"] = len(symbol)
+        raw = raw + wires + general + symbol
 
     seen_head: set[str] = set()
     deduped = []
@@ -219,19 +233,22 @@ def catalyst_news(
         seen_head.add(key)
         deduped.append(item)
 
-    relevant = catalyst.filter_relevant(deduped, ticker, company)
+    relevant = catalyst.filter_relevant(deduped, ticker, company, move=move)
     rejected = len(deduped) - len(relevant)
 
     # Sources that state a fact rather than report one.
     filings = catalyst.sec_filings(ticker, start, end)
+    counts["SEC filings"] = len(filings)
     extra = []
     if session_date:
         earnings = fundamentals.earnings_event(ticker, str(session_date))
         if earnings:
             extra.append(earnings)
+            counts["earnings calendar"] = 1
         halt = feeds.halt_item(ticker, str(session_date)) if CFG.free_feeds_enabled else None
         if halt:
             extra.append(halt)
+            counts["trading halts"] = 1
 
     merged = relevant + filings + extra
     merged.sort(key=lambda i: (catalyst.rank_of(i["tag"]), i.get("age_hours", 0)))
@@ -249,19 +266,39 @@ def catalyst_news(
             break
         if item not in out:
             out.append(item)
+    report = {
+        "rejected": rejected,
+        "move": move,
+        "counts": counts,
+        "hours": hours,
+        "sec_available": catalyst.sec_available(),
+    }
     log.info(
-        "%s catalysts: %d relevant headline(s), %d filing(s), %d calendar/halt fact(s), "
-        "%d rejected as noise",
-        ticker, len(relevant), len(filings), len(extra), rejected,
+        "%s catalysts over %dh: %s -> %d kept, %d rejected as noise%s",
+        ticker, hours,
+        ", ".join(f"{k} {v}" for k, v in counts.items()) or "no sources returned",
+        len(out[:limit]), rejected,
+        "" if report["sec_available"] else " [SEC filings unavailable]",
     )
-    return out[:limit], rejected
+    return out[:limit], report
 
 
-def no_catalyst_line(hours: int | None = None, rejected: int = 0) -> str:
-    line = NO_CATALYST.format(hours=hours or CFG.news_window_hours)
+def no_catalyst_line(hours: int | None = None, rejected: int = 0,
+                     report: dict | None = None) -> str:
+    """Says what was searched, not just that nothing was found — a silent
+    source and a silent market look identical otherwise."""
+    report = report or {}
+    rejected = rejected or report.get("rejected", 0)
+    line = NO_CATALYST.format(hours=hours or report.get("hours") or CFG.catalyst_window_hours)
     if rejected:
         line = line.replace(
             " — move may",
             f" ({rejected} market-roundup / price-only headline(s) ignored) — move may",
         )
+    searched = [k for k, v in (report.get("counts") or {}).items()]
+    if searched:
+        line += f"\n<i>Searched: {', '.join(searched)}."
+        if report.get("sec_available") is False:
+            line += " SEC filings unavailable — set SEC_CONTACT in settings.env."
+        line += "</i>"
     return line

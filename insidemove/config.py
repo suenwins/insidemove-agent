@@ -95,6 +95,10 @@ class Config:
     lookback_days: int = _i("LOOKBACK_DAYS", 200)   # fetched history
     chart_days: int = _i("CHART_DAYS", 90)          # Stage 4 chart window
     news_window_hours: int = _i("NEWS_WINDOW_HOURS", 24)
+    # The catalyst hunt reaches back further than the move window: a release
+    # issued before the prior close, or on the Friday of a session read on
+    # Monday, still explains the move.
+    catalyst_window_hours: int = _i("CATALYST_WINDOW_HOURS", 48)
     min_price: float = _f("MIN_PRICE", 3.0)
     min_avg_dollar_volume: float = _f("MIN_AVG_DOLLAR_VOLUME", 5_000_000)
 

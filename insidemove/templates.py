@@ -119,11 +119,21 @@ TAG_READ = {
     "Trading halt": "The exchange stopped trading in the stock. A halt for news "
                     "pending means a company announcement caused the move; the "
                     "announcement itself is what to read next.",
+    "Peer / sector news": "The catalyst belongs to another company in the same "
+                          "space and this stock moved in sympathy. Read-across "
+                          "moves reverse more often than news-driven ones, because "
+                          "nothing about this company actually changed.",
     "SEC filing": "The company filed a material disclosure in the window; open the "
                   "filing to see the event itself.",
     "Company news": "Company-specific news in the window, but not a recognisable "
                     "catalyst type — treat it as a lead to verify, not an explanation.",
 }
+
+
+DIRECTION_CAVEAT = (
+    "describes a move the other way — most likely the catalyst for an earlier "
+    "session, with this session being the reaction to it"
+)
 
 
 def catalyst_item(item: dict, link: bool = True) -> str:
@@ -138,17 +148,21 @@ def catalyst_item(item: dict, link: bool = True) -> str:
         line += f" — {esc(item['detail'])}"
     source = esc(item.get("source") or "unknown source")
     when = item.get("when")
-    return line + (f" <i>({source}, {esc(when)})</i>" if when else f" <i>({source})</i>")
+    line += f" <i>({source}, {esc(when)})</i>" if when else f" <i>({source})</i>"
+    if item.get("conflicts"):
+        line += f"\n⚠️ <i>{DIRECTION_CAVEAT}.</i>"
+    return line
 
 
-def catalyst_line(ticker: str, candidate: dict, headlines: list[dict], rejected: int = 0) -> str:
+def catalyst_line(ticker: str, candidate: dict, headlines: list[dict],
+                  report: dict | None = None) -> str:
     """The strongest company-specific catalyst, or an honest statement that
     there is none. `headlines` must already be filtered by
     `news.catalyst_news` — roundups and price-only stories never reach here."""
     if not headlines:
         from .news import no_catalyst_line
 
-        return no_catalyst_line(rejected=rejected)
+        return no_catalyst_line(report=report or {})
     return catalyst_item(headlines[0])
 
 
@@ -159,6 +173,7 @@ def catalyst_line(ticker: str, candidate: dict, headlines: list[dict], rejected:
 def _catalyst_section(payload: dict) -> list[str]:
     news = payload.get("news_last_72h")
     rejected = payload.get("news_rejected") or 0
+    report = payload.get("news_report") or {}
     out = ["<b>1. Proximate Catalyst</b>"]
     if not isinstance(news, list) or not news:
         noise = (
@@ -166,9 +181,14 @@ def _catalyst_section(payload: dict) -> list[str]:
             f"price move without a reason, and were ignored."
             if rejected else ""
         )
+        searched = ", ".join((report.get("counts") or {}).keys())
+        where = f" Sources searched: {esc(searched)}." if searched else ""
+        if report.get("sec_available") is False:
+            where += (" SEC filings could not be reached this run (set SEC_CONTACT), "
+                      "so a company disclosure may exist that is not reflected here.")
         out.append(_fact(
             "No company-specific news or material SEC filing inside the lookback window."
-            + noise
+            + noise + where
         ))
         out.append(_inf(
             "With no catalyst on the tape, the move is more likely technical, "
@@ -183,10 +203,18 @@ def _catalyst_section(payload: dict) -> list[str]:
     lead = news[0]
     session = payload.get("session", {})
     move = session.get("pct_change")
+    if lead.get("conflicts"):
+        out.append(_inf(
+            f"The item above {DIRECTION_CAVEAT} — treat the "
+            f"{pct(move, 2, sign=True)} session as the unwind of that reaction "
+            f"rather than as news-driven, unless a same-direction catalyst emerges."
+        ))
+        return out
     read = TAG_READ.get(lead.get("tag"), TAG_READ["Company news"])
     strength = (
         "is the most likely driver of"
-        if lead.get("tag") not in {"Company news", "SEC filing", "Trading halt"}
+        if lead.get("tag") not in {"Company news", "SEC filing", "Trading halt",
+                                   "Peer / sector news"}
         else "may relate to"
     )
     out.append(_inf(

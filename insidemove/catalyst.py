@@ -114,6 +114,57 @@ ROUNDUP = re.compile(
     re.I,
 )
 
+# Forward-looking previews. "Expected to post a loss of 14 cents" was
+# published before the event and reports an estimate, not something that
+# happened — it cannot be the reason the stock moved.
+PREVIEW = re.compile(
+    r"(earnings preview|preview:|q[1-4] preview|results preview|"
+    r"expected to (post|report|announce|earn|lose)|"
+    r"(analysts?|street|wall street) (expect|forecast|predict|anticipate)s?|"
+    r"what to (expect|watch) (from|in|ahead)|ahead of (its |the )?(q[1-4] )?earnings|"
+    r"(earnings|results) (due|scheduled|expected|on deck|next week|tomorrow)|"
+    r"to (report|announce) (its )?(q[1-4] |quarterly |fiscal )?(earnings|results)|"
+    r"will report|set to report|(earnings|results) date|"
+    r"(preview|outlook) (ahead of|before)|here'?s what to expect)",
+    re.I,
+)
+
+# Words that say which way a story's move went. Used to catch a catalyst
+# that explains the *opposite* direction to the session being alerted.
+UP_WORDS = re.compile(
+    r"\b(surge[sd]?|soar(s|ed)?|jump(s|ed)?|rally|rallie[sd]|rocket(s|ed)?|"
+    r"skyrocket(s|ed)?|spike[sd]?|climb(s|ed)?|gain(s|ed)?|rise[sn]?|rose|"
+    r"pop(s|ped)?|advance[sd]?|higher|up \d+|beat(s)?|wins?|awarded|approval|"
+    r"upgrade[sd]?|raise[sd]?)\b", re.I,
+)
+DOWN_WORDS = re.compile(
+    r"\b(plunge[sd]?|plummet(s|ed)?|slump(s|ed)?|sink(s|ing)?|sank|sunk|"
+    r"tumble[sd]?|crater(s|ed)?|crash(es|ed)?|slide[sd]?|slid|drop(s|ped)?|"
+    r"fall(s|en)?|fell|decline[sd]?|lower|down \d+|miss(es|ed)?|cut(s)?|"
+    r"downgrade[sd]?|warn(s|ed)?|halt(s|ed)?|lawsuit|recall|delay(s|ed)?)\b", re.I,
+)
+
+
+def direction_of(text: str) -> int:
+    """+1 if the text describes an up move, -1 for down, 0 if unclear."""
+    up = len(UP_WORDS.findall(text or ""))
+    down = len(DOWN_WORDS.findall(text or ""))
+    if up and not down:
+        return 1
+    if down and not up:
+        return -1
+    return 0
+
+
+def conflicts(item: dict, move: float | None) -> bool:
+    """True when the item plainly describes the opposite direction to the
+    session's move — usually a catalyst belonging to an earlier session."""
+    if move is None or abs(move) < 1:
+        return False
+    implied = direction_of(f"{item.get('headline', '')} {item.get('detail') or ''}")
+    return bool(implied) and (implied > 0) != (move > 0)
+
+
 # Headlines that only report the price move.
 PRICE_ONLY = re.compile(
     r"\b(shares?|stock)\b.{0,40}\b(up|down|jump\w*|soar\w*|surg\w*|spik\w*|rall\w*|"
@@ -122,6 +173,36 @@ PRICE_ONLY = re.compile(
     r"on the move|moving|halted)\b"
     r"|\bwhy (is|are|did) .{0,40}\b(stock|shares)\b"
     r"|\b(stock|shares) (is|are) (up|down|moving|soaring|sinking)\b",
+    re.I,
+)
+
+# Quote pages, data pages and SEO filler. They name the company, sometimes
+# carry a date, and say nothing about why it moved.
+BOILERPLATE = re.compile(
+    r"(stock price,? news|quote and history|price,? quote|share price and|"
+    r"stock (price|quote) (today|history)|price (history|prediction|forecast|target) for|"
+    r"stock (forecast|prediction|analysis|outlook|valuation|score|rating) ?\d*|"
+    r"should you (buy|sell|own)|is .{0,30}\b(a buy|a sell|undervalued|overvalued)\b|"
+    r"(insider trading|institutional (ownership|investors?|holdings)|short interest|"
+    r"ownership) (data|activity|report|update)?|"
+    r"(key (statistics|metrics)|financials|balance sheet|cash flow|dividend history|"
+    r"analyst (estimates|ratings) ?(page|overview)?)$|"
+    r"(buy|sell|hold)\?$|how to (buy|invest)|"
+    r"\b(options? (activity|chain|flow)|unusual options)\b|"
+    r"compare .{0,30}\bstocks?\b|stock comparison|"
+    r"(premarket|pre-market|after[- ]hours) (price|quote|data)|"
+    r"(earnings|conference) call transcript|"
+    r"(weekly|monthly|daily) (performance|returns?) (report|summary)|"
+    r"what you need to know about|everything you need to know)",
+    re.I,
+)
+
+# Sources that are data aggregators rather than reporters. Their pages are
+# generated, not written, so a "Company news" item from one is noise.
+AGGREGATOR = re.compile(
+    r"(yahoo finance|marketbeat|barchart|investing\.com|simply wall st|stocktwits|"
+    r"tipranks|zacks|gurufocus|stocktwits|wallmine|stockinvest|macroaxis|"
+    r"defense world|etf daily|chartmill|finviz|tradingview|benzinga ratings)",
     re.I,
 )
 
@@ -142,6 +223,15 @@ AMBIGUOUS_FIRST = {
 }
 
 _SENTENCE = re.compile(r"(?<=[.!?])\s+(?=[A-Z0-9$\"'(])")
+
+WIRE_SOURCE = re.compile(
+    r"(globe ?newswire|pr ?newswire|business ?wire|accesswire|newsfile|"
+    r"ein ?presswire|newswire|press release|sec edgar)", re.I,
+)
+
+
+def _from_wire(item: dict) -> bool:
+    return bool(WIRE_SOURCE.search(item.get("source") or ""))
 
 
 def name_keys(company: str | None) -> list[str]:
@@ -183,7 +273,9 @@ def classify(text: str) -> str | None:
 
 
 def rank_of(tag: str | None) -> int:
-    order = [name for name, _ in CATEGORIES] + ["Trading halt", "SEC filing", "Company news"]
+    order = [name for name, _ in CATEGORIES] + [
+        "Trading halt", "SEC filing", "Peer / sector news", "Company news",
+    ]
     return order.index(tag) if tag in order else len(order)
 
 
@@ -203,27 +295,34 @@ def assess(item: dict, ticker: str, company: str | None) -> dict | None:
     headline = item.get("headline") or ""
     summary = item.get("summary") or ""
 
-    if ROUNDUP.search(headline):
-        # Salvage: the one sentence in the roundup that is about this company
-        # and names an event.
-        for sentence in _sentences(summary):
-            if mentions(sentence, ticker, keys):
-                tag = classify(sentence)
-                if tag:
-                    return {**item, "headline": _clip(sentence), "tag": tag,
-                            "source": f"{item.get('source') or 'roundup'} roundup",
-                            "detail": None}
+    # Generated quote / data / SEO pages name the company and explain nothing.
+    if BOILERPLATE.search(headline):
         return None
 
-    if not (mentions(headline, ticker, keys) or mentions(summary, ticker, keys)):
+    # A preview of an event that had not happened yet explains nothing.
+    if PREVIEW.search(headline):
         return None
+
+    # A headline that is not about this company must never be shown as this
+    # company's catalyst, however relevant the body text looks. (This is what
+    # put Genmab's trial result under CORT: the article mentioned Corcept
+    # somewhere in the body, and the headline was displayed regardless.)
+    # Such an article is only usable through the salvage path below, which
+    # quotes the sentence about *this* company instead of the headline.
+    if not mentions(headline, ticker, keys):
+        if not mentions(summary, ticker, keys):
+            return None
+        return _salvage(item, ticker, keys)
+
+    if ROUNDUP.search(headline):
+        return _salvage(item, ticker, keys)
 
     head_tag = classify(headline)
     if head_tag:
         return {**item, "tag": head_tag, "detail": None}
 
-    # The headline itself names no event. Look for one in the summary,
-    # preferring the sentence that talks about this company.
+    # The headline is about this company but names no event. Look for one in
+    # the summary, preferring a sentence that talks about this company.
     sentences = _sentences(summary)
     ordered = [s for s in sentences if mentions(s, ticker, keys)] + sentences
     for sentence in ordered:
@@ -233,13 +332,61 @@ def assess(item: dict, ticker: str, company: str | None) -> dict | None:
 
     if PRICE_ONLY.search(headline):
         return None           # restates the move, gives no reason
+
+    # No catalyst type anywhere. A press release is still the company
+    # announcing something, so it is worth a line; an aggregator page is not.
+    if _from_wire(item):
+        return {**item, "tag": "Company news", "detail": None}
+    if AGGREGATOR.search(item.get("source") or ""):
+        return None
     return {**item, "tag": "Company news", "detail": None}
 
 
-def filter_relevant(items: list[dict], ticker: str, company: str | None) -> list[dict]:
+def _salvage(item: dict, ticker: str, keys: list[str]) -> dict | None:
+    """Pull the one sentence that is about this company AND names an event.
+
+    Used for roundups and for articles headlined about someone else — a peer's
+    FDA win that moved the whole sector, say. The quoted sentence replaces the
+    headline, so the line can never credit another company's news to this one.
+    """
+    mine = [s for s in _sentences(item.get("summary") or "") if mentions(s, ticker, keys)]
+    source = item.get("source") or "news"
+    for sentence in mine:
+        tag = classify(sentence)
+        if tag:
+            return {**item, "headline": _clip(sentence), "tag": tag,
+                    "source": f"{source} (mentioned in a wider story)",
+                    "detail": None}
+
+    # The company is mentioned but no event is attributed to it, while the
+    # story itself is about a peer's catalyst. That is a real and common
+    # cause of a move — a sector read-across — so it is reported as exactly
+    # that, never as this company's own news.
+    head_tag = classify(item.get("headline") or "")
+    if mine and head_tag:
+        return {**item, "tag": "Peer / sector news",
+                "source": f"{source} (story is about another company)",
+                "detail": _clip(mine[0], 180)}
+    return None
+
+
+def filter_relevant(items: list[dict], ticker: str, company: str | None,
+                    move: float | None = None) -> list[dict]:
     kept = [a for a in (assess(i, ticker, company) for i in items) if a]
-    # Strongest catalyst type first; within a type, freshest first.
-    kept.sort(key=lambda i: (rank_of(i["tag"]), i.get("age_hours", 0)))
+    for item in kept:
+        item["conflicts"] = conflicts(item, move)
+    # Strongest catalyst type first; within a type, the company's own wire
+    # release beats a second-hand report, and a direct headline beats a
+    # sentence salvaged out of someone else's story; then freshest first.
+    # An item describing the opposite direction goes last whatever its type:
+    # a contract win cannot be the reason a stock fell 29%.
+    kept.sort(key=lambda i: (
+        1 if i.get("conflicts") else 0,
+        rank_of(i["tag"]),
+        0 if _from_wire(i) else 1,
+        1 if "mentioned in a wider story" in (i.get("source") or "") else 0,
+        i.get("age_hours", 0),
+    ))
     return kept
 
 
@@ -293,14 +440,36 @@ OTHER_FORMS = {
 }
 
 
+_sec_blocked = False
+
+
 def _user_agent() -> str:
+    """SEC EDGAR rejects any automated client that does not identify itself
+    with a contact address — a UA without one gets a 403, which is exactly
+    what happens when SEC_CONTACT is unset."""
     contact = (CFG.sec_contact or "").strip()
-    return f"InsideMoveAgent/1.0 {contact}".strip() if contact else (
-        "InsideMoveAgent/1.0 (personal research bot; github.com/suenwins/insidemove-agent)"
-    )
+    return f"InsideMoveAgent/1.0 ({contact})" if contact else "InsideMoveAgent/1.0"
+
+
+def _sec_headers() -> dict:
+    return {
+        "User-Agent": _user_agent(),
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Encoding": "gzip, deflate",
+        "Host": "www.sec.gov",
+    }
+
+
+def sec_available() -> bool:
+    """False once EDGAR has refused us this run — reported in the alert so a
+    missing filing never looks like an absent catalyst."""
+    return not _sec_blocked
 
 
 def _cik_map() -> dict[str, int]:
+    global _sec_blocked
+    if _sec_blocked:
+        return {}
     path = CFG.data_dir / "sec_tickers.json"
     try:
         if path.exists() and _time.time() - path.stat().st_mtime < CIK_CACHE_DAYS * 86400:
@@ -308,13 +477,23 @@ def _cik_map() -> dict[str, int]:
     except Exception:  # noqa: BLE001
         pass
     try:
-        resp = requests.get(EDGAR_TICKERS, headers={"User-Agent": _user_agent()}, timeout=20)
+        resp = requests.get(EDGAR_TICKERS, headers=_sec_headers(), timeout=20)
+        if resp.status_code == 403:
+            _sec_blocked = True        # one complaint per run, not one per ticker
+            log.error(
+                "SEC EDGAR refused the request (403). EDGAR requires a contact "
+                "address in the User-Agent: set SEC_CONTACT=you@example.com in "
+                "settings.env. Filings are skipped until then.%s",
+                "" if CFG.sec_contact else " SEC_CONTACT is currently empty.",
+            )
+            return {}
         resp.raise_for_status()
         mapping = {
             str(row["ticker"]).upper(): int(row["cik_str"])
             for row in resp.json().values()
         }
     except Exception as exc:  # noqa: BLE001
+        _sec_blocked = True
         log.warning("SEC ticker map unavailable: %s", exc)
         return {}
     try:
@@ -400,10 +579,9 @@ def sec_filings(ticker: str, start: datetime, end: datetime) -> list[dict]:
     if not cik:
         return []
     try:
+        headers = dict(_sec_headers(), Host="data.sec.gov")
         resp = requests.get(
-            EDGAR_SUBMISSIONS.format(cik=cik),
-            headers={"User-Agent": _user_agent()},
-            timeout=20,
+            EDGAR_SUBMISSIONS.format(cik=cik), headers=headers, timeout=20
         )
         resp.raise_for_status()
         sub = resp.json()
