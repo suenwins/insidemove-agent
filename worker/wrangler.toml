@@ -2,16 +2,36 @@ name = "insidemove-webhook"
 main = "index.js"
 compatibility_date = "2026-01-01"
 
+# Public, non-secret settings. Change these, redeploy, done.
+[vars]
+# How many guest seats the signup page offers.
+TOTAL_SLOTS = "20"
+# Shown on the page so people can search for the right bot — no @ sign.
+BOT_USERNAME = "InsidermovesAGENT_bot"
+# The signup page's own address, quoted back to strangers in Telegram.
+SIGNUP_URL = "https://insidemove-webhook.suenwins.workers.dev"
+
+# The claimed chat ids live here. Create it once, then paste the id below:
+#   npx wrangler kv namespace create CLAIMS
+[[kv_namespaces]]
+binding = "CLAIMS"
+id = ""ae9ecd4b8a144905bf20a8b03e7335d6"
+
 # Secrets are never written here. Set each one with:
-#   wrangler secret put TELEGRAM_BOT_TOKEN
-#   wrangler secret put TELEGRAM_SECRET
-#   wrangler secret put TELEGRAM_CHAT_ID
-#   wrangler secret put GITHUB_TOKEN
-#   wrangler secret put GITHUB_REPO
+#   npx wrangler secret put TELEGRAM_BOT_TOKEN
+#   npx wrangler secret put TELEGRAM_SECRET
+#   npx wrangler secret put TELEGRAM_CHAT_ID
+#   npx wrangler secret put GITHUB_TOKEN
+#   npx wrangler secret put GITHUB_REPO
+#   npx wrangler secret put SIGNUP_SECRET
 #
 # GITHUB_TOKEN should be a fine-grained personal access token scoped to this
 # one repository with Contents: read and write — that is the permission
 # repository_dispatch requires, and nothing broader is needed.
+#
+# SIGNUP_SECRET does two jobs: it signs the claim codes, and it is the key
+# this bot presents to read /allowlist. It must be byte-identical to the
+# SIGNUP_SECRET in the repository's GitHub Actions secrets.
 
 [observability]
 enabled = true
